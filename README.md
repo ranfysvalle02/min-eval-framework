@@ -2,6 +2,86 @@
 
 -----
 
+Our entire logic is encapsulated in a `SimpleRAGEvaluator` class. This provides a clean, reusable structure for a process that would otherwise be messy. Let's walk through its key components.
+
+#### `_initialize_evaluators()`: Defining Our Metrics
+
+This is the intellectual core of our evaluator. Here, we define *how* we'll measure the performance of our RAG system, using a suite of metrics from `autoevals`. Each metric is chosen to diagnose a specific, potential failure mode in a RAG pipeline.
+
+```python
+# From the SimpleRAGEvaluator class
+def _initialize_evaluators(self):
+    """Initializes the autoevals library and defines metrics."""
+    self.logger.info("Initializing evaluation metrics...")
+    init(client=self.client)
+    
+    self.METRICS = {
+        'Context Relevancy': ContextRelevancy(model=self.evaluation_model),
+        'Faithfulness': Faithfulness(model=self.evaluation_model),
+        'Factuality': Factuality(model=self.evaluation_model),
+        'Exact Match': self._exact_match
+    }
+```
+
+  * **`Faithfulness`**: This is arguably the most important metric for RAG. It answers the question: "Is the generated answer grounded in the provided context?" A low score here indicates the LLM is ignoring the retrieved documents and **hallucinating**, which defeats the entire purpose of RAG.
+  * **`Context Relevancy`**: This metric evaluates the **retriever** component of your RAG system. It asks: "Are the retrieved documents relevant to the user's question?" A low score suggests your vector search or retrieval logic needs improvement.
+  * **`Factuality`**: This is a direct implementation of the LLM-as-a-Judge paradigm. It compares the model's generated answer against a "ground truth" (expected) answer to determine if it's factually correct.
+  * **`Exact Match`**: This is a simple, deterministic **heuristic** evaluator. It's fast and cheap, but as we'll see, its limitations perfectly illustrate why semantic, model-based evaluation is necessary.
+
+#### `_generate_answer()`: Isolating the Generator
+
+This method simulates the "generation" step of RAG. Note the critical instruction in the system prompt: `Answer the user's question based *only* on the context provided.` This instruction is key to creating a valid test for **Faithfulness**, as it constrains the model and allows us to see if it follows instructions.
+
+### Running the Demo: The Evaluator's Dilemma in Practice
+
+The `if __name__ == "__main__":` block shows how to use the class. We provide it with a user prompt, a set of retrieved context documents, and a ground-truth answer.
+
+After running `python demo.py`, you'll get a result like this:
+
+```json
+--- 📊 Final Evaluation Results ---
+{
+  "generated_output": "The primary function of a MongoDB Atlas Search index is to define how your fields are indexed and searched, allowing for full-text search capabilities on your data.",
+  "evaluation_scores": {
+    "Faithfulness": {
+      "score": 1.0,
+      "reason": ""
+    },
+    "Context Relevancy": {
+      "score": 0.478125,
+      "reason": ""
+    },
+    "Factuality": {
+      "score": 0.6,
+      "reason": ""
+    },
+    "Exact Match": {
+      "score": 0,
+      "reason": "Output does not exactly match the expected value."
+    }
+  }
+}
+```
+
+#### Analyzing the Results with a Critical Eye
+
+Let's interpret these scores through the critical lens of the research on machine judgment:
+
+  * **`Faithfulness: 1.0`**: A perfect score. This is a clear success. Our generator correctly used *only* the provided context and did not hallucinate.
+  * **`Context Relevancy: ~0.48`**: This mediocre score is a red flag. It tells us that our **retriever** may have pulled in documents that were only partially relevant to the user's question. This is an excellent example of how autoevals can help us diagnose specific components of a complex RAG system.
+  * **`Factuality: 0.6`**: This is an LLM-as-a-Judge score, and it's not perfect. Why? Perhaps our generated output is more detailed and nuanced than the simple `expected_output`, and the judge is capturing that difference. Or, this could be a manifestation of a subtle **bias** in the `gpt-4o-mini` judge model. We should treat this score as a useful signal, not as absolute truth.
+  * **`Exact Match: 0`**: This is zero, and that’s a feature, not a bug. It perfectly demonstrates the **obsolescence of lexical metrics**. The generated answer is semantically correct and arguably better than the expected answer, but it doesn't use the exact same words. This is precisely why we need LLM-based evaluation.
+
+### Towards Hybrid Intelligence
+
+This script provides a powerful, practical starting point for RAG evaluation. It automates the measurement of key quality indicators and helps you pinpoint weaknesses in your system.
+
+However, it's crucial to remember that this entire process is subject to **Goodhart's Law**. If you blindly optimize for these scores, you may end up with a model that is simply good at pleasing the LLM judge, not one that is genuinely more helpful or accurate. A production-grade evaluation system should go further, implementing techniques to mitigate known biases, such as swapping answer positions to counter **positional bias** or using an ensemble of diverse models as judges.
+
+Ultimately, autoevals are not a replacement for human judgment. The future of evaluation lies in **Hybrid Intelligence**. The role of this script is to act as a massive, scalable screening tool—to handle the 95% of routine cases and flag the 5% that are novel, ambiguous, or high-stakes for expert human review. By combining the scale of machines with the wisdom of humans, we can build a more robust and trustworthy generation of AI.
+
+-----
+
 # How to Evaluate Your RAG System: A Simple Guide with Python and AutoEvals
 
 Retrieval-Augmented Generation (RAG) is a powerful technique that enhances Large Language Models (LLMs) by providing them with relevant, external information. But as with any powerful tool, you need to ensure it's working correctly. How do you know if your RAG system is providing accurate, relevant, and faithful answers? The answer is evaluation.
